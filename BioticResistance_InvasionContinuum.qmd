@@ -1,0 +1,1051 @@
+---
+title: "step1"
+author: "Kun"
+date: 2024-01-03
+date-modified: 2024-04-06
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+# 0. Packages & Functions
+## 0.1 libraries
+
+```{r}
+library(tidyverse)
+library(tictoc)
+library(INLA)
+library(furrr)
+library(data.table)
+library(sf)
+library(janitor)
+library(ggpmisc)
+library(ggh4x)
+library(rtrees)
+library(colorspace) # for colors
+library(scales)
+library(ggridges)
+library(ecoloop)
+library(ggrepel)
+library(patchwork)
+library(ape)
+library(MASS)
+library(conflicted)
+library(corrmorant)
+library(FactoMineR)
+library(ggtext)
+library(agricolae)
+library(ggrain)
+library(ggdensity)
+library(vegan)
+library(cowplot)
+library(directlabels)
+library(mgcv)
+library(aplot)
+
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(purrr::map)
+conflicts_prefer(MASS::area)
+
+options(future.rng.onMisuse = "ignore")
+
+# https://haakonbakkagit.github.io/btopic104.html#3_The_simplest_mesh
+# use the Czech border as the boundary
+
+# Install package ecoloop
+# devtools::install_github("https://github.com/kun-ecology/ecoloop")
+
+library(ecoloop)
+
+```
+
+## 0.2 self-composed functions for visulization and INLA results extraction
+
+```{r}
+my_thm <- theme_minimal()+
+  theme(strip.placement = "outside")+
+  theme(panel.grid = element_blank())+
+  theme(strip.background = element_rect(fill = "grey", color = NA)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(axis.line = element_line(color = "black")) +
+  theme(axis.ticks = element_line(color = "black")) 
+tidy.inla <- function(inla.mod){
+  summary(inla.mod)$fixed |> 
+    as.data.frame() |> 
+    rownames_to_column(var = "terms") |> 
+    rename(lower.ci = `0.025quant`, upper.ci = `0.975quant`,lower.ci1 = `0.1quant`, upper.ci1 = `0.9quant`)
+}
+
+immediateMessage <- function(..., domain = NULL, appendLF = TRUE) {
+  msg <- .makeMessage(..., domain = domain, appendLF = appendLF)
+  call <- sys.call()
+  m <- simpleMessage(msg, call)
+  
+  cls <- class(m)
+  cls <- setdiff(cls, "condition")
+  cls <- c(cls, "immediateCondition", "condition")
+  class(m) <- cls
+  
+  message(m)
+  invisible(m)}
+
+##################
+IQR <- function(data) {
+  # Calculate the 25% and 75% quantiles
+  Q1 <- quantile(data, 0.25)
+  Q3 <- quantile(data, 0.75)
+  
+  IQR <- Q3 - Q1
+  # # Compute Q1 + 1.5 * (Q3 - Q1)
+  # result <- Q1 + 1.5 * (Q3 - Q1)
+  # 
+  # # Return the result
+  # return(result)
+}
+
+plot.type <- c("native", "naturalized", "invaded", "mixed")
+names(plot.type) <- c("native", "native.naturalized", "native.invasive", "native.naturalized.invasive")
+plot.type.clr <- c("#666666", "#01a087", "#3c5488", "#e64a35")
+names(plot.type.clr) <- c("native", "naturalized", "invaded", "mixed")
+
+```
+
+# 1. Load data and calcuate phylogenetic and functional metrics
+
+```{r}
+load("./Data4BioticResistance_InvasionContinuum.RData")
+```
+
+## 1.1 build functional dendrogram from CSR
+
+```{r}
+cz.csr1 <- as.data.frame(cz.csr) 
+  
+row.names(cz.csr1) <- str_replace_all(cz.csr1$taxon_name, " ", "_")
+cz.csr2 <- cz.csr1[, 2:4]
+csr.d <-  dist(cz.csr2, method = "euclidean")
+
+csr.tree <- BAT::tree.build(cz.csr2, distance = "euclidean", func = "nj")
+
+BAT::tree.quality(csr.d, csr.tree) # 0.96
+csr.dist <- cophenetic(csr.tree) |> as.dist() |> as.matrix()
+phy.dist <- cophenetic(cz.tree) |> as.dist() |> as.matrix()
+
+```
+
+## 1.1 phylogenetic and functional metrics of natives
+
+```{r}
+cz.csr |> count(final_status) #1223 native species
+natv.spe <- cz.csr |> 
+  filter(final_status == "native") |> 
+  mutate(taxon_name = str_replace_all(taxon_name, " ", "_")) |> 
+  pull(taxon_name)
+
+natv.phy.tree <- keep.tip(cz.tree, natv.spe)
+natv.csr.tree <- keep.tip(csr.tree, natv.spe)
+
+natv.abun <- plot.abun |> 
+  dplyr::select(id, all_of(natv.spe)) |> 
+  as.data.frame()
+row.names(natv.abun) <- natv.abun$id
+natv.abun <- as.matrix(natv.abun[-1])
+
+# natv.csr.dist <- cophenetic(natv.tree)
+
+################
+#PD
+pd.fd <- tibble(tree.type = c("phy", "fun"),
+       tree.info = list(natv.phy.tree, natv.csr.tree)) |> 
+  mutate(div = map(tree.info, ~ fst.ses.pd(natv.abun, .x, nworkers = 16, ses = T, runs = 999)))
+
+pd.fd1 <- pd.fd |> 
+  unnest(div) |> 
+  select(-tree.info, -obs.z.p) |> 
+  mutate(diff = obs - rand.mean) |> 
+  pivot_wider(id_cols = site, names_from = tree.type, values_from = obs.z:diff)
+pd.fd1 
+names(pd.fd1)[-1] <- c("SES.PD", "SES.FD", "delta.PD", "delta.FD")
+################
+#MPD & MNTD
+mpd.mntd <- tibble(tree.type = c("phy", "fun"),
+       tree.info = list(natv.phy.tree, natv.csr.tree)) |> 
+  mutate(mpd = purrr::map(tree.info, ~ fst.ses.mpd(as.data.frame(natv.abun), cophenetic(.x), 
+                                            nworkers = 16, ses = T, runs = 999))) |> 
+  mutate(mntd = purrr::map(tree.info, ~ fst.ses.mntd(as.data.frame(natv.abun), cophenetic(.x), 
+                                            nworkers = 16, ses = T, runs = 999)))
+
+mpd.mntd$mntd[[1]]
+
+# calculate differences between obs and rand.mean
+mpd.mntd1 <- mpd.mntd |> 
+  select(-tree.info) |> 
+  pivot_longer(cols = mpd:mntd, values_to = "div", names_to = "div.type") |> 
+  unnest(div) |> 
+  mutate(diff = obs - rand.mean) |> 
+  select(site, tree.type, div.type, obs.z, diff) |> 
+  pivot_wider(id_cols = site, names_from = tree.type:div.type, values_from = obs.z:diff)
+mpd.mntd1
+names(mpd.mntd1)[2:9] <- c("SES.MPD", "SES.MNPD", "SES.MFD", "SES.MNFD",
+                           "delta.MPD", "delta.MNPD", "delta.MFD", "delta.MNFD")
+mpd.mntd1
+
+natv.n <- tibble(site = row.names(natv.abun),
+                 natv.n = rowSums(natv.abun>0))
+
+pd.mpd.mntd <- left_join(pd.fd1, mpd.mntd1, by = "site") |> 
+  left_join(natv.n, by = "site") |> 
+  rename(id = "site") |> 
+  left_join(plot.attr.f[1:2], by ="id")
+
+pd.mpd.mntd |> filter(is.na(SES.MPD)) |> pull(id)
+
+# saveRDS(pd.mpd.mntd, file = "./results/pd.mpd.mntd2024.RDS")
+
+pd.mpd.mntd <- readRDS("./results/pd.mpd.mntd2024.RDS")
+```
+
+## 1.2 some exploration of pd.mpd.mntd
+
+```{r}
+# correlations between those variables
+pd.mpd.mntd |> 
+  ggcorrm(aes(color = invasion.grp, fill = invasion.grp)) +
+  lotri(geom_smooth(method = "lm")) +
+  # lotri(geom_point(alpha = 0.5)) +
+  utri_corrtext(nrow = 2, squeeze = 0.6) +
+  scale_color_manual(values = plot.type.clr) +
+  scale_fill_manual(values = plot.type.clr) +
+  dia_names(y_pos = 0.15, size = 3) +
+  dia_density(lower = 0.3, color = 1) +
+  theme_minimal()
+
+#######
+pd.mpd.mntd |> 
+  pivot_longer(cols = SES.PD:delta.MNFD, values_to = "val", names_to = "nm") |> 
+  ggplot(aes(x = val, y = nm, fill = invasion.grp))+
+  geom_density_ridges(scale = 1) +
+  facet_wrap(nm ~., scales = "free", ncol = 1) +
+  theme_minimal()
+
+```
+
+# 2. Preparation
+
+## 2.1 exploration of env
+
+```{r}
+env.f1 |> str()
+# climate: ele, prec, temp
+clim <- env.f1 |> 
+  select(id, elevation, temp, prec) |> 
+  left_join(plot.attr.f[1:2], by = "id")
+clim.pca <- PCA(clim[2:4]) # PC1 explain 87.75% of the total variation, positivly related to elevation and prec while negatively realted to temperature
+plot.PCA(clim.pca, choix = "var")
+
+clim.pca$ind$coord
+clim.x <- as_tibble(clim.pca$ind$coord) |> 
+  select(Dim.1) |> 
+  rename(clim.PC1 = "Dim.1") |> 
+  bind_cols(id = env.f1$id) 
+
+```
+
+## 2.2 build data for alien species presence and richness
+
+```{r}
+resp1 <- cz.plot.f |> 
+  ungroup() |> 
+  mutate(invasion.grp = plot.type[invasion.grp]) |> 
+  mutate(final_status = ifelse(final_status=="native", "native", "alien")) |> 
+  group_by(id, invasion.grp, final_status) |> 
+  summarise(n=n()) |> 
+  ungroup() |> 
+  pivot_wider(names_from = final_status, values_from = n) |> 
+  mutate(alien.ind = ifelse(is.na(alien), 0, 1)) |> 
+  mutate(alien.n = ifelse(is.na(alien), 0, alien)) 
+  
+# relative abundance of all aliens
+resp2 <- cz.plot.f |> 
+  select(id,  invasion.grp, final_status, cover) |> 
+  mutate(final_status = ifelse(final_status=="native", "native", "alien")) |> 
+  group_by(id, invasion.grp, final_status) |> 
+  summarise(cover = sum(cover)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = final_status, values_from = cover, values_fill = 0) |> 
+  mutate(alien.cover = alien/(alien+native)) |> 
+  mutate(scaled_alien.cover = (alien.cover*(12056-1) +0.5)/12056)
+
+resp <- select(resp1, id, invasion.grp, alien.ind, alien.n) |> 
+  left_join(select(resp2, id, alien.cover, scaled_alien.cover), by = "id") |> 
+  left_join(select(plot.attr.f, id, habitat), by = "id")
+
+```
+
+## 2.3 finalized data for INLA models
+
+```{r}
+x.df <- clim.x |> 
+  relocate(id, .before = 1) |> 
+  left_join(select(env.f1, id, latitude, popul_dens, longitude, area, pH), by = "id") |> 
+  left_join(pd.mpd.mntd)
+
+# SES and delta measures
+x.df1 <- bind_rows(select(x.df, id:SES.MNFD, natv.n:SES.FD,invasion.grp) |> 
+                     bind_cols(x.type = "SES"),
+                   select(x.df, id:pH, delta.MPD:delta.MNFD,natv.n, delta.PD:invasion.grp) |> 
+                     bind_cols(x.type = "delta") |> 
+                     rename(SES.MPD = delta.MPD, SES.MNPD = delta.MNPD, 
+                            SES.MFD = delta.MFD, SES.MNFD = delta.MNFD,
+                            SES.PD = delta.PD, SES.FD = delta.FD
+                            )
+                   )
+x.df1 |> filter(x.type=="delta")
+
+df4model <- left_join(x.df1, 
+                      select(resp, -invasion.grp),
+                      by = "id") |> 
+  pivot_longer(cols = alien.ind:scaled_alien.cover, 
+               names_to = "resp.type", values_to = "val") |> 
+  relocate(longitude, .after = 1) |> 
+  relocate(latitude, .after = 2) |> 
+  relocate(val, .after = 1) |> 
+  relocate(resp.type, .after = 1)
+# saveRDS(df4model, file = "./results/df4model2024.RDS")
+# df4model <- readRDS("./results/df4model2024.RDS")
+
+# build data for models
+df4model1 <- df4model |> 
+  nest_by(resp.type, x.type) |> 
+  ungroup() |> 
+  filter(!(resp.type %in% c("alien.cover", "scaled_alien.cover"))) |> 
+  slice(rep(c(1:4, 3, 4), c(4, 4, 4, 4, 4, 4))) |> 
+  mutate(resp.type = rep(c("alien.ind", "alien.n", "alien.richness"), each = 8)) |> 
+  mutate(invasion.grp = rep( c("alien", unname(plot.type[-1])) , 6)) |> 
+  mutate(tmp = map2(resp.type, invasion.grp, function(nm, x){
+    if (x == "alien" & nm == "alien.richness" ){ #| nm == "alien.n"
+      c("naturalized", "invaded", "mixed")
+    } else if (x == "alien" & nm != "alien.richness" ) {
+      c("native", "naturalized", "invaded", "mixed")
+    } else if(x != "alien" & nm == "alien.richness") {
+      c(x)
+    } else {
+      c("native", x)
+    }
+  })) |> 
+  mutate(df = map2(data, tmp, ~ filter(.x, invasion.grp %in% .y))) 
+
+
+```
+
+# 3. Models
+
+## 3.1 meshes
+
+```{r}
+cz.shp <- RCzechia::republika() 
+summary(cz.shp)
+cz.shp <- as_Spatial(cz.shp$geometry)
+
+mesh0 <- inla.mesh.2d(loc.domain = as.inla.mesh.segment(cz.shp)$loc, max.edge = 0.1, 
+                      boundary = cz.shp, offset = c(0.05, 0.05))
+
+{plot(mesh0)
+points(coords, col = "red")}
+
+# If two number is set, then the mesh will be characterized by an outer extension of the domain
+mesh1 <- inla.mesh.2d(loc.domain = as.inla.mesh.segment(cz.shp)$loc, 
+                      max.edge = c(0.1, 0.1), 
+                      boundary = cz.shp, offset = c(0.05, 0.05))
+
+{plot(mesh1)
+points(env.f1[c("longitude", "latitude")], col = "red")}
+
+# cutoff can be used to avoid too many small triangles around clustered data locations (default is 0)
+mesh2 <- inla.mesh.2d(loc.domain = as.inla.mesh.segment(cz.shp)$loc, 
+                      max.edge = c(0.05, 0.05), 
+                      cutoff = 0.01, 
+                      boundary = cz.shp, 
+                      offset = c(0.05, 0.05))
+{plot(mesh2)
+points(env.f1[c("longitude", "latitude")], col = "red")}
+
+
+# optional argument offset is used to define how much domain should be extended in the inner and outer part
+# default is offset=c(-0.05, -0.15)
+
+mesh3 <- inla.mesh.2d(loc.domain = as.inla.mesh.segment(cz.shp)$loc,
+                      max.edge = c(0.1, 0.1), cutoff = 0.02,
+                      boundary = cz.shp, offset = c(0.05, 0.05))
+# curoff = max.edge/5
+{plot(mesh3)
+points(env.f1[c("longitude", "latitude")], col = "red")}
+
+
+mesh4 <- inla.mesh.2d(loc = coords, max.edge = c(0.2, 0.2), cutoff = 0.05,
+                      boundary = cz.shp, offset = c(0.05, 0.05))
+{plot(mesh4)
+points(env.f1[c("longitude", "latitude")], col = "red")}
+
+mesh5 <- inla.mesh.2d(loc = coords, max.edge = c(0.5, 0.2), cutoff = 0.05,
+                      boundary = cz.shp, offset = c(0.05, 0.05))
+{plot(mesh5)
+points(coords, col = "red")}
+
+
+mesh6 <- inla.mesh.2d(loc = coords, max.edge = c(1, 0.2), cutoff = 0.05,
+                      boundary = cz.shp, offset = c(0.05, 0.05))
+{plot(mesh6)
+points(coords, col = "red")}
+
+# 0.5° = 5.5km
+# the outer boundary for the mesh
+diff(range(coords[,1]))
+diff(range(coords[,2]))/3
+
+
+#######
+# numbers of meshes
+map_dbl(paste0("mesh", 0:7), ~ get(.x)$n)
+########################
+# the simplest mesh
+# the larger the max.edge the lower the resolution and the accuracy
+# here I set it as 0.1 (°)
+
+#########################
+# what is needed for a good mesh
+# 1. At least 1 spatial range between the boundary and any point
+# 2. max.edge less than 1/5 of the spatial range
+# 3. no weird-looking parts of the mesh (usually fixed by cut-off= max.edge/5)
+
+mesh <- inla.mesh.2d(
+  loc.domain = as.inla.mesh.segment(cz.shp)$loc,
+  max.edge = c(0.1, 0.2),
+  cutoff = 0.05,
+  boundary = cz.shp,
+  offset = c(0.1, 0.1),
+  crs = st_crs(cz.shp)
+) 
+plot(mesh)
+mesh$n
+
+```
+
+## 3.2 use VIF for selecting explanatory variables
+
+```{r}
+df4model2 <- df4model1 |> 
+  mutate(coord = map(df,  ~ .x[c("longitude", "latitude")])) |> 
+  mutate(vif.df = map(df, ~ usdm::vif(select(.x, c("clim.PC1", "popul_dens", "area", "pH", "SES.MNPD",
+                                                   "SES.MNFD", "natv.n", "SES.PD", "SES.FD")
+                                             ) |> 
+                                          as.data.frame() ))) 
+
+df4model2$vif.df
+df4model2 |> 
+  select(resp.type, x.type, invasion.grp, vif.df) |> 
+  slice(1:6, 13:18) |> 
+  unnest(vif.df) |> 
+  print(n = 120)
+
+tic()
+
+vif.fmla <- df4model2 |>
+  select(resp.type, x.type, invasion.grp, vif.df) |> 
+  unnest(vif.df) |> 
+  filter(VIF <= 5) |>
+  nest_by(resp.type, x.type, invasion.grp) |>
+  ungroup() |>
+  mutate(fmla = map(
+    data,
+    ~ paste0(
+      "val ~ -1 + Intercept +",
+      paste0(.x$Variables, collapse = "+"),
+      " + f(i, model = spde)"
+    ) |>
+      as.formula()
+  )) 
+
+vif.fmla$fmla
+
+```
+
+## 3.3 INLA models (FINAL, VIF < 5)
+
+```{r}
+plan(multisession, workers = 6)
+vif.inla <- future_pmap(list(df4model2$resp.type, 
+                      df4model2$df, 
+                      df4model2$coord, 
+                      df4model2$vif.df),
+                 function(nm, df, coord, vifs){
+  df <- df |>  
+    mutate(area = log(area), popul_dens = log1p(popul_dens)) |> 
+    # mutate(across(c(area), log1p)) |> 
+    mutate(across(clim.PC1:SES.FD,
+                  ~ (.x-mean(.x))/sd(.x))) |>  
+    as.data.frame()
+  coord <- as.data.frame(coord)
+  
+  # VIF < 5 only include functional metrics
+  # VIF<7 include all explanatory variables
+  sel.vars <- filter(vifs, VIF < 5) #
+  fmla <- paste0(
+      "val ~ -1 + Intercept +",
+      paste0(sel.vars$Variables, collapse = "+"),
+      " + f(i, model = spde)"
+    ) |>  as.formula()
+  
+  # step 2 The projection matrix makes the link between your observed data and the spatial effect estimated by the model. It is straightforward to create:
+  Amat <- inla.spde.make.A(mesh, loc = as.matrix(coord))
+  # step 3 Set the stochastic partial differential equation
+  spde <- inla.spde2.matern(mesh) 
+  
+  # Step 5 stack data
+  dat_stack <- inla.stack(data = list(val = df$val), # the response variable
+                        # the projection matrix
+                        A = list(Amat, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), 
+                        effects = list(i = 1:spde$n.spde, # the spatial effect
+                                       Intercept = rep(1, nrow(df)), # the intercept
+                                       natv.n = df$natv.n,
+                                       clim.PC1 = df$clim.PC1,
+                                       popul_dens = df$popul_dens,
+                                       rivers_dist = df$rivers_dist,
+                                       SES.PD = df$SES.PD,
+                                       SES.FD = df$SES.FD,
+                                       SES.MPD = df$SES.MPD,
+                                       SES.MFD = df$SES.MFD,
+                                       SES.MNPD = df$SES.MNPD,
+                                       SES.MNFD = df$SES.MNFD,
+                                       pH = df$pH,
+                                       area = df$area
+                                       )
+                        )
+  
+  fam <- case_when(
+                   nm == "alien.ind" ~ "binomial",
+                   nm == "alien.n" ~ "zeroinflatednbinomial0",
+                   nm == "alien.richness" ~ "nbinomial"
+                   )
+
+  immediateMessage(" running") 
+  m_inla <- inla(fmla,
+             family  =  fam,
+              data = inla.stack.data(dat_stack),
+              control.predictor = list(A = inla.stack.A(dat_stack), compute = TRUE),
+              control.compute = list(dic = TRUE, cpo = TRUE, waic = TRUE),
+              quantiles = c(0.025, 0.1, 0.5, 0.9, 0.975))
+
+  return(m_inla)
+  
+})
+plan(sequential)
+toc()
+# saveRDS(vif.inla, file = "./results/2024_vif.inla.mesh0.1_MNTD.VIF5.RDS")
+
+#######
+# vif.inla <- readRDS("./results/2024_vif.inla.mesh0.1_MNTD.VIF5.RDS")
+pdf("./figures/Fig2.pdf", width = 7, height = 6)
+df4model2 |> 
+  select(resp.type, x.type, invasion.grp) |> 
+  mutate(inla.summ = map(vif.inla, tidy.inla)) |> 
+  filter(x.type == "SES") |>
+  # filter(invasion.grp != "alien") |> 
+  filter(!(resp.type %in% c("alien.cover", "alien.richness") )) |> 
+  unnest(inla.summ) |> 
+  filter(terms != "Intercept") |> 
+  mutate(terms = factor(terms, levels = c("area", "natv.n", "SES.FD", "SES.MNFD",
+                                          "clim.PC1", "pH", "popul_dens"
+                                          )  )) |> 
+  mutate(invasion.grp = factor(invasion.grp, levels = c(plot.type[-1], "alien") )) |> 
+  mutate(resp.type = case_when(resp.type == "alien.ind" ~ "a) alien incidence",
+                               resp.type == "alien.n" ~ "b) alien richness"
+                               )) |> 
+  mutate(resp.type = factor(resp.type,
+                            levels = c("a) alien incidence", "b) alien richness"))) |> #,"alien.cover"
+  mutate(sig = ifelse(lower.ci * upper.ci > 0, "sig", "non_sig")) |> 
+  mutate(grp = case_when(sig == "sig" & mean > 0 ~ "positive",
+                         sig == "sig" & mean < 0 ~ "negative",
+                         .default = "non_sig"
+                         )) |> 
+  mutate(lab = ifelse(sig == "sig", specify_decimal(mean, 2), NA)) |> 
+  mutate(lab.y = ifelse(mean > 0, upper.ci, lower.ci)) |> 
+  mutate(lab.y = case_when(lab.y < -0.6 ~ upper.ci,
+                           lab.y > 0.4 ~ lower.ci,
+                           .default = lab.y
+                           )) |> 
+  mutate(yjust = ifelse(lab.y == lower.ci, 1.1, -0.1)) |> 
+  ggplot(aes(x = fct_rev(terms), y = mean, color = invasion.grp, 
+             group = fct_rev(invasion.grp))) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_errorbar(aes(ymin = lower.ci, ymax = upper.ci),
+                position = position_dodge(width = 0.7),
+                linewidth = 1, width = 0)+
+  geom_errorbar(aes(ymin = lower.ci1, ymax = upper.ci1), 
+                position = position_dodge(width = 0.7),
+                linewidth = 3, width = 0)+
+  geom_point(aes(shape =resp.type), 
+             size = 2, color = "black", shape = 21, fill = "white",
+             position = position_dodge(width = 0.7)) + 
+  geom_text(aes(x = terms, y = lab.y, label = lab, hjust = yjust),
+            position = position_dodge(width = 0.7), size = 3, 
+            show.legend = F
+            ) +
+  scale_color_manual(values = c(alien = "#666666", plot.type.clr[-1])) +
+  # map(seq(1.5, 7, 1), ~ geom_vline(xintercept = .x, linewidth = 0.2, color = "grey90") ) +
+  map(seq(1.5, 7, 2), ~ ggplot2::annotate("rect", xmin = .x, xmax = .x+1, 
+                                          ymin = -Inf, ymax = Inf,
+                                          alpha = .1,fill = "grey") ) +
+  # facet_grid2(rows = vars(invasion.grp), 
+  #             cols = vars(resp.type), 
+  #             independent = "x",
+  #             axes = "x", scales= "free_x") +
+  # facet_grid2( 
+  #             rows = vars(resp.type), 
+  #             independent = "y",
+  #             axes = "y", scales= "free_y") +
+  facet_wrap2(. ~ resp.type, ncol = 2) +
+  coord_flip() +
+  ylab("Standardized coefficients") +
+  xlab("Explanatory variables") +
+  theme_minimal() +
+  theme(strip.background = element_rect(fill = "grey", color = NA)) +
+  theme(legend.position = "top") +
+  theme(panel.background = element_rect(fill = NA, color = "grey")) +
+  theme(panel.grid.major.x = element_blank()) +
+  theme(panel.grid.minor.x = element_blank()) +
+  theme(panel.grid.major.y = element_blank()) +
+  theme(panel.grid.minor.y = element_blank()) +
+  theme(axis.ticks = element_line(color = "black"))
+
+dev.off()
+
+```
+
+# 4. Fgures
+
+## Fig.1
+
+```{r}
+plot.coord <- plot.attr.f %>% 
+  left_join(select(env.f1, id, longitude, latitude), by = "id") %>% 
+  mutate(invasion.grp = plot.type[invasion.grp]) |> 
+  mutate(invasion.grp = factor(invasion.grp, level = plot.type)) %>% 
+  arrange(invasion.grp) %>% 
+  group_by(invasion.grp) %>% 
+  mutate(n = n()) %>% 
+  mutate(invasion.grp = paste0(invasion.grp, " (n = ", n, ")")) %>% 
+  ungroup() %>% 
+  mutate(invasion.grp = fct_inorder(invasion.grp)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = st_crs(cz.shp))
+
+plot.type.clr1 <- plot.type.clr
+names(plot.type.clr1) <- plot.coord$invasion.grp %>% levels()
+
+plots.p <- st_as_sf(cz.shp) |> 
+  ggplot()+
+  geom_sf(fill = "NA") +
+  geom_sf(data = plot.coord, aes(color = invasion.grp),
+          shape = 21, size = 1, stroke = 0.3) +
+  scale_color_manual(values = plot.type.clr1) +
+  facet_grid2(invasion.grp ~ .,
+              strip = strip_themed(
+              background_y = elem_list_rect(fill = plot.type.clr1, 
+                                            color = plot.type.clr1),
+                text_y = elem_list_text(color = "white", size = 10, bold = T)
+                ),
+              switch = "y"
+              ) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  # theme(strip.background = element_rect(fill = plot.type.clr1, color = NA)) +
+  theme(panel.grid = element_line(linewidth = 0.2))+
+  theme(strip.placement = "outside")
+plots.p 
+#########
+spe.count <- cz.plot.f |> 
+  mutate(invasion.grp  = plot.type[invasion.grp]) |> 
+  mutate(final_status = ifelse(final_status == "native", "native", "alien")) |> 
+  group_by(id, invasion.grp, final_status) |> 
+  summarise(n = n()) |> 
+  pivot_wider(names_from = final_status, values_from = n)
+
+spe.count1 <- spe.count %>% 
+  dplyr::select(invasion.grp, id, native, alien) %>% 
+  pivot_longer(cols = native:alien, names_to = "status", values_to = "val") %>% 
+  group_by(invasion.grp, status) %>% 
+  summarise(across(val, list(min = min, max =max, mean = mean), .names = "{.fn}")) %>%
+  filter(mean!=0) %>% 
+  mutate(status = ifelse(status == "native", "native", invasion.grp)) %>% 
+  mutate(lab = paste0(specify_decimal(mean, 0), " ", "[", min, ", ", max, "]")) 
+
+spe.count.p <- spe.count %>% 
+  pivot_longer(cols = native:alien, names_to = "status", values_to = "val") %>% 
+  mutate(val = ifelse(val == 0, NA, val)) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(status = ifelse(status == "native", "native", invasion.grp)) |>
+  mutate(invasion.grp = factor(invasion.grp, level = rev(plot.type))) %>% 
+  mutate(status = factor(status, level = c("native", "naturalized", "invaded", "mixed"))) %>%
+  ggplot(aes(x = invasion.grp, y = val, color = status, fill = status)) + #, fill = status
+  geom_rain(alpha = 0.5,
+            boxplot.args.pos = list(
+              width = 0.2, position = position_nudge(x = 0.3)),
+            violin.args.pos = list(
+              side = "r",
+              width = 0.7, position = position_nudge(x = 0.5)),
+            point.args = list(alpha = 0.3),
+            point.args.pos = rlang::list2(position = position_jitter(width = 0.12, height = 0))
+            ) +
+  stat_summary(geom = "point", fun = mean, 
+               aes(group = status), shape = 21,
+             color = "white", size = 3, stroke = 1) +
+  geom_label(aes(y = 60 , x= invasion.grp, label = lab, fill = status), 
+             size =4, data = spe.count1, hjust = 0, nudge_x = 0.5, 
+             vjust = (spe.count1$status == "native"), color = "white") +
+  scale_color_manual(values = plot.type.clr) +
+  scale_fill_manual(values = plot.type.clr) +
+  facet_wrap(factor(invasion.grp, levels = plot.type) ~ ., 
+             strip.position = "top", 
+             scales = "free_y",
+             ncol = 1) +
+  guides(color = guide_legend(title = NULL, nrow = 1, alpha = 1),
+         fill = guide_legend(title = NULL, nrow = 1, alpha = 1)
+         ) +
+  xlab(NULL) +
+  ylab("Species richness") +
+  coord_flip() +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  theme(panel.grid.major = element_line(color = "grey90", linewidth = 0.1)) +
+  theme(axis.line = element_blank()) +
+  theme(axis.text.y = element_blank()) +
+  theme(strip.text = element_blank())
+####################
+
+pdf("./figures/Fig1.pdf", width = 8, height = 8)
+
+(plots.p | spe.count.p) + plot_layout(widths = c(2,  1.5))
+
+dev.off()
+
+
+```
+
+## Fig.2
+
+```{r}
+# vif.inla <- readRDS("./results/2024_vif.inla.mesh0.1_MNTD.VIF5.RDS")
+pdf("./figures/Fig2.pdf", width = 7, height = 6)
+df4model2 |> 
+  select(resp.type, x.type, invasion.grp) |> 
+  mutate(inla.summ = map(vif.inla, tidy.inla)) |> 
+  filter(x.type == "SES") |>
+  # filter(invasion.grp != "alien") |> 
+  filter(!(resp.type %in% c("alien.cover", "alien.richness") )) |> 
+  unnest(inla.summ) |> 
+  filter(terms != "Intercept") |> 
+  mutate(terms = factor(terms, levels = c("area", "natv.n", "SES.FD", "SES.MNFD",
+                                          "clim.PC1", "pH", "popul_dens"
+                                          )  )) |> 
+  mutate(invasion.grp = factor(invasion.grp, levels = c(plot.type[-1], "alien") )) |> 
+  mutate(resp.type = case_when(resp.type == "alien.ind" ~ "a) alien incidence",
+                               resp.type == "alien.n" ~ "b) alien richness"
+                               )) |> 
+  mutate(resp.type = factor(resp.type,
+                            levels = c("a) alien incidence", "b) alien richness"))) |> #,"alien.cover"
+  mutate(sig = ifelse(lower.ci * upper.ci > 0, "sig", "non_sig")) |> 
+  mutate(grp = case_when(sig == "sig" & mean > 0 ~ "positive",
+                         sig == "sig" & mean < 0 ~ "negative",
+                         .default = "non_sig"
+                         )) |> 
+  mutate(lab = ifelse(sig == "sig", specify_decimal(mean, 2), NA)) |> 
+  mutate(lab.y = ifelse(mean > 0, upper.ci, lower.ci)) |> 
+  mutate(lab.y = case_when(lab.y < -0.6 ~ upper.ci,
+                           lab.y > 0.4 ~ lower.ci,
+                           .default = lab.y
+                           )) |> 
+  mutate(yjust = ifelse(lab.y == lower.ci, 1.1, -0.1)) |> 
+  ggplot(aes(x = fct_rev(terms), y = mean, color = invasion.grp, 
+             group = fct_rev(invasion.grp))) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_errorbar(aes(ymin = lower.ci, ymax = upper.ci),
+                position = position_dodge(width = 0.7),
+                linewidth = 1, width = 0)+
+  geom_errorbar(aes(ymin = lower.ci1, ymax = upper.ci1), 
+                position = position_dodge(width = 0.7),
+                linewidth = 3, width = 0)+
+  geom_point(aes(shape =resp.type), 
+             size = 2, color = "black", shape = 21, fill = "white",
+             position = position_dodge(width = 0.7)) + 
+  geom_text(aes(x = terms, y = lab.y, label = lab, hjust = yjust),
+            position = position_dodge(width = 0.7), size = 3, 
+            show.legend = F
+            ) +
+  scale_color_manual(values = c(alien = "#666666", plot.type.clr[-1])) +
+  map(seq(1.5, 7, 2), ~ ggplot2::annotate("rect", xmin = .x, xmax = .x+1, 
+                                          ymin = -Inf, ymax = Inf,
+                                          alpha = .1,fill = "grey") ) +
+  facet_wrap2(. ~ resp.type, ncol = 2) +
+  coord_flip() +
+  ylab("Standardized coefficients") +
+  xlab("Explanatory variables") +
+  theme_minimal() +
+  theme(strip.background = element_rect(fill = "grey", color = NA)) +
+  theme(legend.position = "top") +
+  theme(panel.background = element_rect(fill = NA, color = "grey")) +
+  theme(panel.grid.major.x = element_blank()) +
+  theme(panel.grid.minor.x = element_blank()) +
+  theme(panel.grid.major.y = element_blank()) +
+  theme(panel.grid.minor.y = element_blank()) +
+  theme(axis.ticks = element_line(color = "black"))
+
+dev.off()
+```
+
+## Fig. S1
+
+```{r}
+library(gghalves)
+library(ggdist)
+library(ggrain)
+library(tagger)
+pdf("./figures/Fig.S1.pdf", width = 8, height = 5, useDingbats = T)
+x.df |>
+  mutate(area = log(area), popul_dens = log1p(popul_dens) ) |> 
+  mutate(invasion.grp = factor(invasion.grp, levels = plot.type)) |> 
+  filter(!is.na(invasion.grp)) |> 
+  pivot_longer(cols = clim.PC1:delta.FD, names_to = "env") |>
+  filter(!(env %in% c("rivers_dist", "longitude", "latitude"))) |> 
+  filter(env %in% c("area", "natv.n", "SES.PD", "SES.FD", 
+                    "SES.MNPD", "SES.MNFD", "clim.PC1", "pH", "popul_dens")) |> 
+  mutate(env = factor(env, 
+                      levels =  c("area", "natv.n", "SES.PD", "SES.FD", 
+                    "SES.MNPD", "SES.MNFD", "clim.PC1", "pH", "popul_dens")
+                      )) |>
+  ggplot(aes(
+    x = invasion.grp,
+    y = value,
+    color = invasion.grp 
+  )) +
+  # geom_density_ridges(panel_scaling = F, alpha = 0.5) +
+  geom_rain(alpha = 0.5,
+            boxplot.args.pos = list(
+              width = 0.1, position = position_nudge(x = 0.2)),
+            violin.args.pos = list(
+              side = "r",
+              width = 1, position = position_nudge(x = 0.4)),
+            point.args = list(alpha = 0.3, pch = "." , size = 2), #shape = 21
+            point.args.pos = rlang::list2(position =position_jitter(width = 0.1, height = 0))
+            ) +
+  stat_summary(geom = "point", fun = mean, 
+               shape = 21, size = 2, 
+               position = position_dodge(width = 0.5),
+               color = "black", fill = "white") +
+  stat_summary(fun.y = function(x)mean(x, na.rm = T), 
+                   geom = "text",
+                   color = "black",
+                   vjust = 1.5, 
+                   aes(label = round(after_stat(y), 2)), 
+                   show.legend = F
+                   )+
+  facet_wrap(. ~ env, scales = "free_y", strip.position = "left") +
+  scale_color_manual(values = alpha(plot.type.clr, 0.5)) +
+  ylab(NULL) +
+  xlab(NULL) +
+  theme_minimal() +
+  tagger::tag_facets(tag_prefix = "") +
+  guides(color = guide_legend(title = "Plot type")) +
+  # coord_flip() +
+  theme(strip.placement = "outside",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank()
+        # axis.text.y = element_blank()
+        ) +
+  theme(legend.position = "none")
+dev.off()  
+
+```
+
+## Fig. S2
+
+```{r}
+pdf("./figures/Fig.S2.pdf", width = 6, height = 6, useDingbats = T)
+x.df |>
+  mutate(area = log(area), popul_dens = log1p(popul_dens) ) |> 
+  mutate(invasion.grp = factor(invasion.grp, levels = plot.type)) |> 
+  filter(!is.na(invasion.grp)) |> 
+  pivot_longer(cols = clim.PC1:delta.FD, names_to = "env") |>
+  filter(!(env %in% c("rivers_dist", "longitude", "latitude"))) |> 
+  filter(env %in% c("area", "natv.n", "SES.PD", "SES.FD", 
+                    "SES.MNPD", "SES.MNFD", "clim.PC1", "pH", "popul_dens")) |> 
+  mutate(env = factor(env, 
+                      levels =  c("area", "natv.n", "SES.PD", "SES.FD", 
+                    "SES.MNPD", "SES.MNFD", "clim.PC1", "pH", "popul_dens")
+                      )) |>
+  pivot_wider(id_cols = id:invasion.grp, names_from = env, values_from = value) |> 
+  select(c("id", "invasion.grp", "area", "natv.n", "SES.PD", "SES.FD", 
+           "SES.MNPD", "SES.MNFD", "clim.PC1", "pH", "popul_dens")) |> 
+  select(-id) |> 
+  ggcorrm(mapping = aes(col = invasion.grp, fill = invasion.grp)) +
+  # lotri(geom_point(shape = ".", size = 3)) +
+  lotri(geom_smooth(method = "lm", formula = y ~ x)) +
+  # lotri(geom_smooth(method = "lm", formula = y ~ x, aes(group = 1))) +
+  utri_corrtext(nrow = 2, squeeze = 0.55) + #, aes(group = 1)
+  # dia_names(y_pos = 0.15, size = 3) +
+  dia_density(lower = 0.3, alpha = 0.2) +
+  scale_color_manual(values = plot.type.clr) +
+  scale_fill_manual(values = plot.type.clr) +
+  scale_size_continuous(range = c(1, 4)) +
+  #  scale_color_manual(values = c("grey",colorspace::qualitative_hcl(4)[-1])) +
+  # scale_fill_manual(values =  c("grey",colorspace::qualitative_hcl(4)[-1])) +
+  guides(color = guide_legend(title = "Plot type"),
+         fill = guide_legend(title = "Plot type")
+         ) +
+  theme(legend.position = "top",
+        axis.text = element_markdown(),
+        strip.background = element_blank(),
+        strip.text.x = element_markdown(angle = 60, hjust = 0.1, vjust = 0.1),
+        strip.text.y.right = element_markdown(angle = 0, hjust = 0)
+        ) 
+dev.off()
+
+
+```
+
+## Fig. S3
+
+```{r}
+clim.pca
+clim.pc12 <- clim.pca$ind$coord |> 
+  as_tibble() |> 
+  rename(PC1 = "Dim.1", PC2 = "Dim.2") |> 
+  bind_cols(id = env.f1$id) |> 
+  left_join(plot.attr.f, by = "id") |> 
+  mutate(invasion.grp = plot.type[invasion.grp]) |> 
+  mutate(invasion.grp = factor(invasion.grp, levels = plot.type))
+
+clim.arrow12 <- clim.pca$var$coord |>
+  as.data.frame() |> 
+  rownames_to_column(var = "clim") |> 
+  mutate(clim = c("elevation", "temperature", "precipitation")) |> 
+  as_tibble() |> 
+  rename(PC1 = "Dim.1", PC2 = "Dim.2") |> 
+  mutate(PC1 = 5*PC1, PC2 = 5*PC2)
+
+clim.var <- clim.pca$var$cor |> 
+  as.data.frame() |> 
+  select(-Dim.3) |> 
+  rownames_to_column(var = "clim") |> 
+  mutate(clim = c("elevation", "temperature", "precipitation")) |> 
+  as_tibble() |> 
+  rename(PC1 = "Dim.1", PC2 = "Dim.2") |> 
+  pivot_longer(cols = PC1:PC2, names_to = "PC", values_to = "cor")
+
+pdf("./figures/Fig.S3.pdf", width = 6, height = 5)
+ggplot(clim.pc12, aes(x = PC1, y = PC2, color = invasion.grp)) +
+  geom_point(size = 2, shape = 19, alpha = 0.4, fill = NA, stroke = 1) +
+  geom_segment(aes(x = 0, y = 0, xend = PC1, yend = PC2), 
+               data = clim.arrow12, arrow = arrow(),
+               inherit.aes = F
+               ) +
+  geom_text_repel(aes(x = PC1, y = PC2, label = clim),
+                  data = clim.arrow12, inherit.aes = F) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.8) +
+  # ylim(c(-3, 3)) +
+  scale_color_manual(values = plot.type.clr)+
+  guides(color = guide_legend(size = 3)) +
+  # annotation_custom(ggplotGrob(var.cor.p), xmin = -5.5, xmax = -0.5, ymin = -3, ymax = -0.7) +
+  xlab("PC1 (87.75%)") +
+  ylab("PC2 (10.75%)") +
+  theme_minimal()+
+  theme(legend.position =  "right") 
+dev.off()
+
+```
+
+## Fig. S4-7
+
+```{r}
+vif.p.fun <- function(df){
+  df |>
+    arrange(desc(VIF)) |>
+    mutate(Variables = factor(Variables,
+                              levels = c("SES.PD", "SES.MNPD",
+                                         "area", "natv.n", "SES.FD", 
+                                         "SES.MNFD","clim.PC1", "pH", "popul_dens")
+                              )) |>
+    mutate(grp = ifelse(VIF > 5, "exclude", "include")) |>
+    ggplot(aes(x = fct_rev(Variables), y = VIF, fill = grp)) +
+    geom_bar(stat = "identity", color = "black") +
+    geom_text(aes(label = ecoloop::specify_decimal(VIF, 2)), hjust = 0) +
+    geom_hline(yintercept = 5, linetype = "dashed") +
+    scale_y_continuous(
+      expand = c(0, 0),
+      limits = c(0, 15),
+      breaks = seq(0, 15, 5)
+    ) +
+    scale_fill_manual(values = c(exclude = "transparent", include = "gray50")) +
+    facet_grid(. ~ invasion.grp) +
+    my_thm +
+    xlab(NULL) +
+    ylab(NULL) +
+    coord_flip() +
+    theme(axis.text.x = element_markdown(angle = 0, hjust = 0)) +
+    theme(axis.text.y = element_blank()) +
+    theme(legend.position = "none")
+}
+
+corr.p.fun <- function(df){
+  df |> 
+  select(c("SES.PD", "SES.MNPD", "area", "natv.n", "SES.FD", "invasion.grp",
+           "SES.MNFD","clim.PC1", "pH", "popul_dens")) |> 
+  ggcorrm(aes(color = invasion.grp)) +
+  # lotri(geom_point(shape = ".", size = 3)) +
+  lotri(geom_smooth(method = "lm", formula = y ~ x)) +
+  # lotri(geom_smooth(method = "lm", formula = y ~ x, aes(group = 1))) +
+  utri_corrtext(nrow = 2, squeeze = 0.55) + #, aes(group = 1)
+  # dia_names(y_pos = 0.15, size = 3) +
+  dia_density(lower = 0.3, alpha = 0.2) +
+  scale_color_manual(values = plot.type.clr) +
+  scale_size_continuous(range = c(1, 4)) +
+  theme(legend.position = "none",
+        axis.text = element_markdown(),
+        strip.background = element_blank(),
+        strip.text.x = element_markdown(angle = 0, hjust = 0.1, vjust = 0.1),
+        strip.text.y.right = element_markdown(angle = 0, hjust = 0)
+        ) 
+}
+
+##################
+vif.df <- df4model1 |> 
+  select(resp.type, invasion.grp, x.type, df) |> 
+  filter(x.type == "SES", resp.type != "alien.richness") |> 
+  slice(1:4) |> 
+  ungroup() |> 
+  mutate(df = map(df, ~ mutate(.x, area = log(area), popul_dens = log1p(popul_dens)))) |> 
+  mutate(df = map2(invasion.grp, df, ~ bind_cols(select(.y, -invasion.grp), 
+                                                 invasion.grp = .x))) |> 
+  mutate(vif.df = map(df, ~ usdm::vif(select(.x, c("area", "natv.n", "SES.PD", "SES.FD", 
+                    "SES.MNPD", "SES.MNFD", "clim.PC1", "pH", "popul_dens")) |>
+                                          as.data.frame()))) |> 
+  mutate(vif.df = map2(invasion.grp, vif.df, ~ bind_cols(.y, invasion.grp = .x))) |> 
+  mutate(vif.p = map(vif.df, vif.p.fun)) |> 
+  mutate(corr.p = map(df, corr.p.fun)) |> 
+  select(-df) 
+
+pdf("./figures/Fig.S4-7.pdf", width = 8, height = 5)
+
+plot_grid(vif.df$corr.p[[1]], vif.df$vif.p[[1]], align =  "hv", rel_widths = c(3, 1))
+plot_grid(vif.df$corr.p[[2]], vif.df$vif.p[[2]], align =  "h", rel_widths = c(3, 1))
+plot_grid(vif.df$corr.p[[3]], vif.df$vif.p[[3]], align =  "h", rel_widths = c(3, 1))
+plot_grid(vif.df$corr.p[[4]], vif.df$vif.p[[4]], align =  "h", rel_widths = c(3, 1))
+
+dev.off()
+
+
+
+```
