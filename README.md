@@ -1,4 +1,4 @@
-[![10.5281/zenodo.12818669](https://zenodo.org/badge/{github_id}.svg)](https://zenodo.org/badge/latestdoi/{github_id})
+# BioticResistance_InvasionContinuum [![DOI](https://zenodo.org/badge/716638649.svg)](https://zenodo.org/doi/10.5281/zenodo.12818669)
 
 This repository contains all the required data and code to reproduce the analyses and visualization in the following study:
 
