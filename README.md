@@ -1,3 +1,5 @@
+[![10.5281/zenodo.12818669](https://zenodo.org/badge/{github_id}.svg)](https://zenodo.org/badge/latestdoi/{github_id})
+
 This repository contains all the required data and code to reproduce the analyses and visualization in the following study:
 
 > Kun Guo, Petr Pyšek, Milan Chytrý, Jan Divíšek, Martina Sychrová, Zdeňka Lososová, Mark van Kleunen, Simon Pierce, Wen-Yong Guo. Stage dependence of Elton’s biotic resistance hypothesis of biological invasions. Nature Plants. Accepted.
