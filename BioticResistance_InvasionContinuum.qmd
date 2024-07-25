@@ -10,6 +10,7 @@ editor_options:
 ---
 
 # 0. Packages & Functions
+
 ## 0.1 libraries
 
 ```{r}
@@ -472,7 +473,7 @@ vif.fmla$fmla
 
 ```
 
-## 3.3 INLA models (FINAL, VIF < 5)
+## 3.3 INLA models (FINAL, VIF \< 5)
 
 ```{r}
 plan(multisession, workers = 6)
@@ -1049,3 +1050,11 @@ dev.off()
 
 
 ```
+
+## Fig. S8
+```{r}
+pdf("./figures/Fig.S8.pdf", width = 8, height = 6)
+plot(mesh)
+dev.off()
+```
+
