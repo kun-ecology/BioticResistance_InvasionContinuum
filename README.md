@@ -4,7 +4,7 @@ This repository contains all the required data and code to reproduce the analyse
 
 - Kun Guo, Petr Pyšek, Milan Chytrý, Jan Divíšek, Martina Sychrová, Zdeňka Lososová, Mark van Kleunen, Simon Pierce, Wen-Yong Guo. Stage dependence of Elton’s biotic resistance hypothesis of biological invasions. Nature Plants. Accepted.
 
-## How to use:
+## How to use
 
 - 1. Download this repo as .zip file and unzip it to a folder.
 
